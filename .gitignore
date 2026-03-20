@@ -7,3 +7,4 @@ venv/
 .ipynb_checkpoints/
 .DS_Store
 euchre_env
+checkpoints
