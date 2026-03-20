@@ -16,7 +16,7 @@ Recommended curriculum:
   4. both vs self       ~100k episodes
 """
 
-import os, sys, json, time, random
+import os, sys, json, time, random, shutil
 from collections import deque
 from datetime import datetime
 from typing import List, Tuple, Dict, Optional
@@ -39,6 +39,13 @@ from augment import all_augmented_bid_states, all_augmented_play_states, AUGMENT
 
 CKPT_CONFIG = {'BID_STATE_DIM': BID_STATE_DIM, 'PLAY_STATE_DIM': PLAY_STATE_DIM}
 
+def autosave(step):
+    # Copy the latest checkpoint file
+    src_file = os.path.join(CHECKPOINT_SRC, "model.ckpt")
+    dst_file = os.path.join(CHECKPOINT_DST, f"model_step_{step}.ckpt")
+    shutil.copy(src_file, dst_file)
+    print(f"Saved checkpoint to Drive at step {step}")
+
 def save_checkpoint(bid_net, play_net, episode, stats, save_path, tag=None):
     os.makedirs(save_path, exist_ok=True)
     weights = {'bid_net': bid_net.state_dict(), 'play_net': play_net.state_dict()}
@@ -52,6 +59,7 @@ def save_checkpoint(bid_net, play_net, episode, stats, save_path, tag=None):
 
     ckpt = os.path.join(save_path, 'latest.pt')
     torch.save(weights, ckpt)
+    autosave(episode)
     with open(ckpt + '.json', 'w') as f:
         json.dump(meta, f)
     if tag:
@@ -905,6 +913,7 @@ if __name__ == '__main__':
             print("--no-resume: no existing checkpoint found, starting fresh.")
 
     resume = not a.no_resume
+    os.makedirs(CHECKPOINT_DST, exist_ok=True)
 
     # Default lr and entropy per mode
     lr = a.lr or {'bid-imitate':1e-3, 'play-imitate':1e-3,
