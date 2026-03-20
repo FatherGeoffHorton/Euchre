@@ -1,0 +1,69 @@
+# What We Learned Building a Euchre AI
+
+## The Core Problem Is Harder Than It Looks
+
+Euchre seems simple — 24 cards, 5 tricks, straightforward rules — but it's a surprisingly deep reinforcement learning problem. The game has **two coupled decisions** (when to bid and how to play), **partial information** (you can't see opponents' hands), **partnership dynamics** (your partner's plays carry information), and **score-sensitive strategy** (the right play at 8-8 is different from 2-0). Each of these adds complexity that simple RL struggles with.
+
+## Reward Signal Quality Is Everything
+
+The single biggest lesson: **the gradient is only as good as the reward signal**. We spent most of the project fighting this in different forms.
+
+The bid network collapsed to always-pass (or always-call) repeatedly because game-level win/loss rewards are too distant from individual bid decisions. A good bid on a weak hand that gets lucky looks identical to a bad bid that got lucky. The fix was hand-level rewards — did *this* bid on *this* hand lead to a point, a march, or an euchre? That tight feedback loop is what finally got the bid network working.
+
+The play network had a similar problem with REINFORCE — trick counts are too noisy a signal because hand strength dominates outcome more than card play quality. Supervised imitation of the heuristic solved it in minutes what REINFORCE couldn't solve in tens of thousands of episodes.
+
+## Curriculum Learning Is Not Optional
+
+Random initialization → self-play is a path to nowhere. You need to build knowledge in stages:
+
+1. **Imitate first** — give the networks a floor of competence before RL starts. The bid network learned profitable calling thresholds and the play network reached 86% heuristic accuracy through supervised learning, both in under five minutes. RL alone never got close.
+2. **Isolate then combine** — training both networks simultaneously creates circular credit assignment. The bid network can't learn when to call if bad card play poisons the reward signal, and the play network can't learn good card play if it's trained on hands the bid network called incorrectly.
+3. **Stable opponents before adaptive ones** — self-play too early causes catastrophic forgetting. The networks need something solid to push against. Heuristic training first, self-play only after reaching ~60% win rate.
+
+## Diagnostics Reveal What Metrics Hide
+
+Win rate is a lagging and ambiguous indicator. The `diagnose.py` tool revealed the real problem immediately: the network was calling trump on 91% of hands and getting euchred 42% of the time, for negative expected value. No amount of staring at win rate would have surfaced that. The lesson: **build domain-specific diagnostics early**, before you've wasted training time chasing the wrong problem.
+
+Similarly, the "95% accuracy" in bid imitation was completely misleading — it just meant the network had learned to always pass on a 74% pass dataset. Per-class accuracy told the real story.
+
+## Class Imbalance Kills Supervised Learning
+
+The bid dataset is ~74% passes because the heuristic is conservative. No amount of class weighting fixed the collapse to always-pass — the gradient was simply dominated by 74 pass examples for every 26 bid examples. **Subsampling the majority class** (randomly dropping 2/3 of passes each batch) solved it immediately and landed the call rate within 1% of target. This is a well-known ML lesson that still bit us hard.
+
+## State Vector Design Matters More Than Architecture
+
+The networks are small (256-wide residual MLPs) and simple. What moved the needle was adding **explicit derived features** to the state vectors:
+
+- Trump count, right bower, left bower, void suits, ace count → bid network stopped needing to rediscover basic card counting
+- Trick urgency features (tricks needed / tricks remaining) → play network could directly read "we must win all remaining tricks"  
+- Partner's played card (separated from the full trick) → easier to read partnership signals
+
+The raw card bits contain all this information implicitly, but asking a network to learn derived relationships from scratch under sparse RL rewards is asking too much. Hand the network the conclusions it needs, not just the raw data.
+
+## Self-Play Is A Reward, Not A Starting Point
+
+We tried self-play twice too early and regressed badly both times. Self-play only worked once the networks had a solid heuristic foundation (~63% vs heuristic). The opponent-update-only-on-improvement logic helped prevent the "blind leading the blind" collapse where both networks degrade together.
+
+Even then, self-play win rate hovering near 50% is **not a failure** — it's expected, because the learning agent and the lagged opponent are always near the same strength. The right metric during self-play is eval vs the fixed heuristic, not the self-play win rate.
+
+## Practical Engineering Lessons
+
+**Checkpoint compatibility is a constant hazard.** State vector dimensions changed multiple times as we added features, invalidating old checkpoints silently. The `infer_config` validator that checks dims at load time saved enormous debugging time.
+
+**`--no-resume` should always ask for confirmation.** Obvious in retrospect.
+
+**Episode counts should be relative, not absolute.** `--episodes 30000` meaning "run until episode 30000" instead of "run 30000 more episodes" caused training to silently stop immediately on resume. A small fix with large quality-of-life impact.
+
+**Timestamps on every log line.** Also obvious in retrospect. Without them you can't tell if training is proceeding at a reasonable rate or has silently stalled.
+
+## Final Result
+
+Starting from random weights, the AI reached **~70% win rate against the heuristic** through:
+- Bid imitation learning (calibrated call rate, +0.74 expected value per call)
+- Play imitation learning (86% accuracy matching heuristic card play)  
+- REINFORCE fine-tuning against heuristic (both networks co-adapting)
+- Self-play refinement
+
+The bid network learned to be highly selective — when it does call, its euchre rate is below 18% compared to the heuristic's 27%. The play network learned the full strategic picture including trick urgency, partner signals, and score-aware aggression.
+
+The remaining gap to human expert play is mostly in areas RL struggles with generally: reading opponent tendencies, deeper partnership communication, and the kind of strategic reasoning that requires planning several tricks ahead.
